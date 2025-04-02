@@ -3,51 +3,41 @@ import numpy as np
 from flask_cors import CORS
 import random
 import os
+import joblib
 
 app = Flask(__name__)
 CORS(app)  # Allow cross-origin requests (from React frontend)
 
 # Constants
 BOARD_SIZE = 9
-PLAYER_X = 1  # AI (X)
-PLAYER_O = -1  # Player (O)
+PLAYER_X = 1  # Our agent (X)
+PLAYER_O = -1  # Opponent (O)
 EMPTY = 0  # Empty cell
 
+# Neural Network Architecture
 class TicTacToeNN:
-    def __init__(self):
+    def __init__(self, epsilon=0.1):
         self.input_size = BOARD_SIZE
-        self.hidden_size = 18  # Can be adjusted
+        self.hidden_size = 36  # Try experimenting with this value
         self.output_size = BOARD_SIZE
         self.weights_input_hidden = np.random.rand(self.input_size, self.hidden_size)
         self.weights_hidden_output = np.random.rand(self.hidden_size, self.output_size)
         self.bias_hidden = np.random.rand(1, self.hidden_size)
         self.bias_output = np.random.rand(1, self.output_size)
-
+        self.epsilon = 0.5  # Increase exploration
+    
     def sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
-
+    
     def sigmoid_derivative(self, x):
         return x * (1 - x)
-
+    
     def forward(self, state):
         hidden_input = np.dot(state, self.weights_input_hidden) + self.bias_hidden
         hidden_output = self.sigmoid(hidden_input)
         final_input = np.dot(hidden_output, self.weights_hidden_output) + self.bias_output
         final_output = self.sigmoid(final_input)
         return final_output, hidden_output
-
-    def train(self, board, target_q_values, learning_rate=0.1):
-        state = np.array(board).reshape(1, BOARD_SIZE)
-        final_output, hidden_output = self.forward(state)
-        error = target_q_values - final_output
-        d_output = error * self.sigmoid_derivative(final_output)
-        error_hidden_layer = d_output.dot(self.weights_hidden_output.T)
-        d_hidden_layer = error_hidden_layer * self.sigmoid_derivative(hidden_output)
-
-        self.weights_hidden_output += hidden_output.T.dot(d_output) * learning_rate
-        self.bias_output += np.sum(d_output, axis=0, keepdims=True) * learning_rate
-        self.weights_input_hidden += state.T.dot(d_hidden_layer) * learning_rate
-        self.bias_hidden += np.sum(d_hidden_layer, axis=0, keepdims=True) * learning_rate
 
     def get_q_values(self, board):
         state = np.array(board).reshape(1, BOARD_SIZE)
@@ -56,144 +46,145 @@ class TicTacToeNN:
 
     def choose_move(self, board):
         q_values = self.get_q_values(board)
-        valid_moves = [i for i in range(BOARD_SIZE) if board[i] == EMPTY]
-        valid_q_values = q_values[valid_moves]
-        best_move = valid_moves[np.argmax(valid_q_values)]
+        print("Q-values for current board:", q_values)  # Debug log
+
+        # Epsilon-greedy exploration: if random value < epsilon, choose a random move
+        if random.random() < self.epsilon:
+            valid_moves = [i for i in range(BOARD_SIZE) if board[i] == EMPTY]
+            best_move = random.choice(valid_moves)
+            print(f"Exploring: Chosen random move {best_move}")
+        else:  # Exploit: choose the best Q-value move
+            valid_moves = [i for i in range(BOARD_SIZE) if board[i] == EMPTY]
+            valid_q_values = q_values[valid_moves]
+            print("Valid moves and corresponding Q-values:", list(zip(valid_moves, valid_q_values)))  # Debug log
+            best_move = valid_moves[np.argmax(valid_q_values)]
+            print(f"Exploiting: Chosen best move {best_move}")
+
         return best_move
 
-# Game logic
+    
+    def train(self, board, target_q_values, learning_rate=0.1):
+        # Convert board to array (flattened)
+        state = np.array(board).reshape(1, BOARD_SIZE)
+
+        # Forward pass
+        final_output, hidden_output = self.forward(state)
+
+        # Print Q-values before training
+        print("Before training Q-values:", final_output.flatten())
+
+        # Compute the error (target Q-value - predicted Q-value)
+        error = target_q_values - final_output
+
+        # Backpropagation
+        d_output = error * self.sigmoid_derivative(final_output)
+        error_hidden_layer = d_output.dot(self.weights_hidden_output.T)
+        d_hidden_layer = error_hidden_layer * self.sigmoid_derivative(hidden_output)
+
+        # Update weights and biases
+        self.weights_hidden_output += hidden_output.T.dot(d_output) * learning_rate
+        self.bias_output += np.sum(d_output, axis=0, keepdims=True) * learning_rate
+        self.weights_input_hidden += state.T.dot(d_hidden_layer) * learning_rate
+        self.bias_hidden += np.sum(d_hidden_layer, axis=0, keepdims=True) * learning_rate
+
+        # Print Q-values after training
+        final_output, _ = self.forward(state)
+        print("After training Q-values:", final_output.flatten())
+
+    
+    def train_episode(self, episode_moves, rewards):
+        """
+        Accumulate all moves and their rewards, then train after the episode.
+        episode_moves: List of moves made during the episode
+        rewards: Corresponding rewards for each move in the episode
+        """
+        # Iterate over all moves in the episode
+        for move, reward in zip(episode_moves, rewards):
+            board, target_q_values = move
+            self.train(board, target_q_values, reward)
+
+# Check if a player has won
 def check_win(board, player):
     win_conditions = [
         [0, 1, 2], [3, 4, 5], [6, 7, 8],  # Rows
         [0, 3, 6], [1, 4, 7], [2, 5, 8],  # Columns
-        [0, 4, 8], [2, 4, 6]               # Diagonals
+        [0, 4, 8], [2, 4, 6]              # Diagonals
     ]
     for condition in win_conditions:
         if all(board[i] == player for i in condition):
             return True
     return False
 
+# Check if the board is full
 def is_board_full(board):
     return all(cell != EMPTY for cell in board)
 
-# Initialize the game state
-game_board = [EMPTY] * BOARD_SIZE
-current_player = PLAYER_X  # AI (X) starts
 
-# Create the TicTacToeNN agent
-agent = TicTacToeNN()
+def load_model_with_joblib(filename="tictactoe_model.pkl"):
+    agent = joblib.load(filename)
+    print("Loaded model weights_input_hidden:", agent.weights_input_hidden)
+    print("Loaded model weights_hidden_output:", agent.weights_hidden_output)
+    return agent
 
-@app.route('/game', methods=['GET'])
-def get_game_state():
-    global game_board, current_player
+
+def load_model():
+    global agent
+    try:
+        agent = load_model_with_joblib("tictactoe_model.pkl")  # Load once when the server starts
+        print("Model loaded successfully!")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        agent = TicTacToeNN()  # Fall back to a new agent if loading fails
+
+
+# @app.route('/get_move', methods=['POST'])
+# def get_move():
+#     data = request.get_json()
+#     board = data.get('board', [])
     
-    # If the board is empty, let the AI (X) make the first move
-    if game_board == [EMPTY] * BOARD_SIZE:
-        move = agent.choose_move(game_board)
-        game_board[move] = PLAYER_X
-        current_player = PLAYER_O  # Switch turn to Player O
+#     # Check for invalid board values
+#     if len(board) != 9 or any(val not in [0, 1, -1] for val in board):
+#         return jsonify({"error": "Invalid board format. Board must contain only 0, 1, or -1."}), 400
+#     agent = load_model_with_joblib("tictactoe_model.pkl")  # Load the model here
+
+#     # agent = TicTacToeNN()  # Instantiate the agent
+#     move = agent.choose_move(board)  # Get the move from the agent
     
-    # Convert the board to 'X' and 'O' strings for display
-    display_board = ['X' if cell == PLAYER_X else 'O' if cell == PLAYER_O else '' for cell in game_board]
-    
-    return jsonify({'board': display_board})
+#     return jsonify({"move": move})  # Return the move in a JSON response
 
-
-# Global variable to track AI's moves
-ai_move_history = []
-player_move_history = []
-
-@app.route('/move', methods=['POST'])
-def make_move():
-    global game_board, current_player, ai_move_history, player_move_history
+@app.route('/get_move', methods=['POST'])
+def get_move():
     data = request.get_json()
-    move = data['move']
+    board = data.get('board', [])
     
-    # Track the move
-    if current_player == PLAYER_X:
-        ai_move_history.append(move)
-    else:
-        player_move_history.append(move)
-    
-    # Validate and apply the move
-    if game_board[move] != EMPTY:
-        return jsonify({'error': 'Invalid move, spot already taken'}), 400
-    
-    game_board[move] = current_player
-    
-    # Check if the player has won
-    if check_win(game_board, current_player):
-        winner = 'X' if current_player == PLAYER_X else 'O'
-        # Train the model after the game ends
-        train_after_game(winner)
-        display_board = ['X' if cell == PLAYER_X else 'O' if cell == PLAYER_O else '' for cell in game_board]
-        return jsonify({'message': f'Player {winner} wins!', 'board': display_board})
-    
-    # Check for draw
-    if is_board_full(game_board):
-        # Train the model after the game ends
-        train_after_game('draw')
-        display_board = ['X' if cell == PLAYER_X else 'O' if cell == PLAYER_O else '' for cell in game_board]
-        return jsonify({'message': 'It\'s a draw!', 'board': display_board})
-    
-    # Switch players
-    current_player = -current_player  # Switch from X to O, or O to X
-    
-    # If it's AI's turn, let the agent make a move
-    if current_player == PLAYER_X:
-        move = agent.choose_move(game_board)
-        ai_move_history.append(move)  # Track AI's move
-        game_board[move] = PLAYER_X
-        
-        if check_win(game_board, PLAYER_X):
-            # Train after AI wins
-            train_after_game('AI')
-            display_board = ['X' if cell == PLAYER_X else 'O' if cell == PLAYER_O else '' for cell in game_board]
-            return jsonify({'message': 'AI wins!', 'board': display_board})
-        if is_board_full(game_board):
-            # Train after draw
-            train_after_game('draw')
-            display_board = ['X' if cell == PLAYER_X else 'O' if cell == PLAYER_O else '' for cell in game_board]
-            return jsonify({'message': 'It\'s a draw!', 'board': display_board})
+    # Check for invalid board values
+    if len(board) != 9 or any(val not in [0, 1, -1] for val in board):
+        return jsonify({"error": "Invalid board format. Board must contain only 0, 1, or -1."}), 400
 
-        current_player = PLAYER_O  # Switch back to the player
+    # Get the current model (do not reload here, use the one loaded at server startup)
+    global agent
+    move = agent.choose_move(board)  # Get the move from the agent
+    
+    return jsonify({"move": move})  # Return the move in a JSON response
 
-    # Convert game_board from numbers (1, -1, 0) to ['X', 'O', ''] format
-    display_board = ['X' if cell == PLAYER_X else 'O' if cell == PLAYER_O else '' for cell in game_board]
-    
-    return jsonify({'message': 'Move made', 'board': display_board})
 
-def train_after_game(result):
-    """
-    Train the model after each game (win, loss, or draw)
-    """
-    global ai_move_history, player_move_history, agent
+@app.route('/check_status', methods=['POST'])
+def check_status():
+    data = request.get_json()
+    board = data['board']
+    current_player = data['current_player']
     
-    # Determine the reward based on the game outcome
-    if result == 'AI':  # AI wins
-        reward = 1
-    elif result == 'draw':  # Draw
-        reward = 0
-    else:  # AI loses
-        reward = -1
+    if check_win(board, 1):  # Check if X wins
+        return jsonify({"status": "win", "player": 1})  # X wins
     
-    # Use the AI's move history and player move history to train the model
-    for move in ai_move_history:
-        target_q_values = np.zeros(BOARD_SIZE)
-        target_q_values[move] = reward
-        agent.train(game_board, target_q_values)
+    elif check_win(board, -1):  # Check if O wins
+        return jsonify({"status": "win", "player": -1})  # O wins
     
-    # Clear move history for the next game
-    ai_move_history = []
-    player_move_history = []
+    elif is_board_full(board):  # Check if it's a draw (board full and no winner)
+        return jsonify({"status": "draw"})
+    
+    return jsonify({"status": "continue"})  # The game continues
 
-@app.route('/reset', methods=['POST'])
-def reset_game():
-    global game_board, current_player
-    # Reset game state
-    game_board = [EMPTY] * BOARD_SIZE
-    current_player = PLAYER_X  # AI (X) starts the game
-    return jsonify({'message': 'Game reset', 'board': [''] * BOARD_SIZE})
 
 
 
@@ -201,60 +192,174 @@ def reset_game():
 
 ###### IF YOU WANT TO PRE-TRAIN THE MODEL:
 
-# def print_board(board):
-#     symbols = {1: 'X', -1: 'O', 0: '.'}
-#     for i in range(0, BOARD_SIZE, 3):
-#         print(' '.join([symbols[board[i]], symbols[board[i+1]], symbols[board[i+2]]]))
+def print_board(board):
+    symbols = {1: 'X', -1: 'O', 0: '.'}
+    for i in range(0, BOARD_SIZE, 3):
+        print(' '.join([symbols[board[i]], symbols[board[i+1]], symbols[board[i+2]]]))
 
-# def is_board_full(board):
-#     return all(cell != EMPTY for cell in board)
+def is_board_full(board):
+    return all(cell != EMPTY for cell in board)
 
-# def play_game(agent):
-#     board = [EMPTY] * BOARD_SIZE
-#     current_player = PLAYER_X
+def play_game():
+    agent = load_model_with_joblib("tictactoe_model.pkl")  # Load the model here
+    board = [EMPTY] * BOARD_SIZE
+    current_player = PLAYER_X
     
-#     while True:
-#         print_board(board)
+    while True:
+        print_board(board)
         
-#         if current_player == PLAYER_X:
-#             move = agent.choose_move(board)
-#         else:
-#             move = random.choice([i for i in range(BOARD_SIZE) if board[i] == EMPTY])  # Random move for opponent
+        if current_player == PLAYER_X:
+            move = agent.choose_move(board)
+        else:
+            move = random.choice([i for i in range(BOARD_SIZE) if board[i] == EMPTY])  # Random move for opponent
         
-#         board[move] = current_player
+        board[move] = current_player
         
-#         # Check if the current player has won
-#         if check_win(board, current_player):
-#             print_board(board)
-#             print(f"Player {'X' if current_player == PLAYER_X else 'O'} wins!")
-#             return current_player
+        # Check if the current player has won
+        if check_win(board, current_player):
+            print_board(board)
+            print(f"Player {'X' if current_player == PLAYER_X else 'O'} wins!")
+            return current_player
         
-#         if is_board_full(board):
-#             print_board(board)
-#             print("It's a draw!")
-#             return 0
+        if is_board_full(board):
+            print_board(board)
+            print("It's a draw!")
+            return 0
         
-#         current_player = -current_player  # Switch player
+        current_player = -current_player  # Switch player
 
 # def train_agent(agent, episodes=1000):
 #     for episode in range(episodes):
 #         print(f"Episode {episode + 1}/{episodes}")
-#         winner = play_game(agent)
-        
-#         # Reward system: winning or drawing provides some reward
-#         reward = 1 if winner == PLAYER_X else -1 if winner == PLAYER_O else 0
-        
-#         # Update the agent's Q-values (target Q-values should be updated based on the outcome)
-#         agent.train(agent.get_q_values([EMPTY] * BOARD_SIZE), reward)
-        
-#         # Optionally, print training progress after each episode
+#         board = [EMPTY] * BOARD_SIZE
+#         current_player = PLAYER_X
+#         episode_moves = []
+#         rewards = []
 
+#         while True:
+#             if current_player == PLAYER_X:
+#                 move = agent.choose_move(board)
+#             else:
+#                 move = random.choice([i for i in range(BOARD_SIZE) if board[i] == EMPTY])  # Random move for opponent
+            
+#             board[move] = current_player
+#             episode_moves.append((board.copy(), agent.get_q_values(board)))  # Save the board and the Q-values for each move
+
+#             # Check if the current player has won
+#             if check_win(board, current_player):
+#                 reward = 1 if current_player == PLAYER_X else -1
+#                 rewards.append(reward)
+#                 print(f"Player {'X' if current_player == PLAYER_X else 'O'} wins!")
+#                 break
+
+#             # Check for a draw
+#             if is_board_full(board):
+#                 rewards.append(0)  # No reward, it's a draw
+#                 print("It's a draw!")
+#                 break
+
+#             # Switch player
+#             current_player = -current_player  # Alternate players
+
+#         # Train the agent after the episode ends
+#         agent.train_episode(episode_moves, rewards)
+
+def train_agent(agent, episodes=1000):
+    for episode in range(episodes):
+        print(f"Episode {episode + 1}/{episodes}")
+        board = [EMPTY] * BOARD_SIZE
+        current_player = PLAYER_X
+        
+        while True:
+            if current_player == PLAYER_X:
+                move = agent.choose_move(board)
+            else:
+                move = random.choice([i for i in range(BOARD_SIZE) if board[i] == EMPTY])  # Random move for opponent
+            
+            board[move] = current_player
+
+            # Check if the current player has won
+            if check_win(board, current_player):
+                reward = 1 if current_player == PLAYER_X else -1
+                agent.train(board, reward)  # Update Q-values for this game
+                print(f"Player {'X' if current_player == PLAYER_X else 'O'} wins!")
+                break
+
+            # Check for a draw
+            if is_board_full(board):
+                agent.train(board, 0)  # No reward, it's a draw
+                print("It's a draw!")
+                break
+
+            # Switch player
+            current_player = -current_player  # Alternate players
+
+
+def save_model_with_joblib(agent, filename="tictactoe_model.pkl"):
+    joblib.dump(agent, filename)
+    print("Model saved to", filename)
+
+
+def train_and_save_model():
+    agent = TicTacToeNN()
+    train_agent(agent, episodes=20000)  # Train the agent for 1000 episodes
+    save_model_with_joblib(agent)
+
+
+def play_game_Manual():
+    agent = load_model_with_joblib("tictactoe_model.pkl")  # Load the model here
+
+    board = [EMPTY] * BOARD_SIZE
+    current_player = PLAYER_X  # The AI always starts as 'X'
+    
+    while True:
+        print_board(board)
+        
+        if current_player == PLAYER_X:
+            # AI move (automatically selects based on Q-values)
+            move = agent.choose_move(board)
+            print(f"AI (X) selects position {move}...")
+        else:
+            # Player move (manual input for 'O')
+            valid_move = False
+            while not valid_move:
+                try:
+                    move = int(input("Enter your move (0-8): "))
+                    if board[move] == EMPTY:
+                        valid_move = True
+                    else:
+                        print("Invalid move! The spot is already taken.")
+                except ValueError:
+                    print("Invalid input! Please enter an integer between 0 and 8.")
+                except IndexError:
+                    print("Invalid move! Please enter a number between 0 and 8.")
+        
+        # Make the move
+        board[move] = current_player
+        
+        # Check if the current player has won
+        if check_win(board, current_player):
+            print_board(board)
+            print(f"Player {'X' if current_player == PLAYER_X else 'O'} wins!")
+            return current_player
+        
+        # Check if the board is full (draw condition)
+        if is_board_full(board):
+            print_board(board)
+            print("It's a draw!")
+            return 0
+        
+        # Switch players
+        current_player = -current_player  # Alternate between X and O
 
 
 if __name__ == '__main__':
     # agent = TicTacToeNN()
     # train_agent(agent, episodes=1000)
     # print("Training complete! Now, you can play against the AI.")
-
+    # train_and_save_model()
+    # play_game()
+    # play_game_Manual()
+    load_model()
     port = int(os.environ.get('PORT', 5000))  # Default to 5000 if PORT isn't set
     app.run(host='0.0.0.0', port=port)
