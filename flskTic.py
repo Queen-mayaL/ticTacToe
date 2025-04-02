@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request
 import numpy as np
 from flask_cors import CORS
 import random
-
+import os
 
 app = Flask(__name__)
 CORS(app)  # Allow cross-origin requests (from React frontend)
@@ -256,4 +256,5 @@ if __name__ == '__main__':
     # train_agent(agent, episodes=1000)
     # print("Training complete! Now, you can play against the AI.")
 
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5000))  # Default to 5000 if PORT isn't set
+    app.run(host='0.0.0.0', port=port)
