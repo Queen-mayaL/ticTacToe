@@ -174,16 +174,21 @@ def check_status():
     board = data['board']
     current_player = data['current_player']
     
+    # Check if X (1) wins
     if check_win(board, 1):  # Check if X wins
         return jsonify({"status": "win", "player": 1})  # X wins
     
+    # Check if O (-1) wins
     elif check_win(board, -1):  # Check if O wins
         return jsonify({"status": "win", "player": -1})  # O wins
     
+    # Check if the board is full and there’s no winner (draw)
     elif is_board_full(board):  # Check if it's a draw (board full and no winner)
         return jsonify({"status": "draw"})
     
+    # If none of the above, the game continues
     return jsonify({"status": "continue"})  # The game continues
+
 
 
 
