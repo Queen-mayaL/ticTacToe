@@ -37,7 +37,7 @@ function App() {
         }
 
         try {
-            const response = await axios.post("http://127.0.0.1:5000/get_move", {
+            const response = await axios.post("https://tictactoe-1-a87f.onrender.com/get_move", {
                 board: validBoard,
             });
             const aiMove = response.data.move;
@@ -54,7 +54,7 @@ function App() {
 
     const checkStatus = async (newBoard, checkForOWin = false) => {
         try {
-            const response = await axios.post("http://127.0.0.1:5000/check_status", {
+            const response = await axios.post("https://tictactoe-1-a87f.onrender.com/check_status", {
                 board: newBoard,
                 current_player: currentPlayer, // This is the last player who made a move
             });
